@@ -2,19 +2,25 @@
 #
 # Fields, separated by any run of whitespace:
 #
-#   channel   ppa                    version                     stability
+#   channel   ppa                    version
 #
-# stability is `stable` or `preview`. Exactly one row must be `stable`: it is the
-# channel that :latest follows, and the one a push build (which carries no inputs)
-# uses. Promoting a channel means moving the word `stable`, not editing a workflow.
+# A push builds every channel listed here. There is no default channel and no
+# :latest tag: with several channels published side by side, both would only be
+# ambiguous. Every image tag names either the channel or the exact build.
 #
-# The version must contain the PPA's own marker (~kisak / ~mesarc). The build checks
-# this, because a version pasted into the wrong row would produce an image tagged with
-# one channel while carrying the other's driver.
+# `kisak` is the one to deploy unless you have measured a reason not to -- it is
+# the newest tagged stable Mesa. `mesarc` is the 26.2 line, which Mesa itself
+# labels a development release. See README.md.
+#
+# The version must contain the channel's own name (~kisak / ~mesarc). The build
+# checks this, because a version pasted into the wrong row would produce an image
+# tagged with one channel while carrying the other's driver.
 #
 # Re-pinning: when a PPA publishes a newer version the exact-version install stops
-# resolving and the build fails loudly. That is deliberate. Fix it here, and only here.
+# resolving and that channel's build fails loudly. That is deliberate. Fix it here,
+# and only here. Channels build independently, so one stale pin does not stop the
+# others.
 
-# channel  ppa                    version                                     stability
-kisak      ppa:kisak/kisak-mesa   26.1.7~kisak1~n                             stable
-mesarc     ppa:ernstp/mesarc      26.2.0+git2608121546.5cdfde45036~n~mesarc0  preview
+# channel  ppa                    version
+kisak      ppa:kisak/kisak-mesa   26.1.7~kisak1~n
+mesarc     ppa:ernstp/mesarc      26.2.0+git2608121546.5cdfde45036~n~mesarc0

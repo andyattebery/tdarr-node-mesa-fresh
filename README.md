@@ -56,12 +56,17 @@ configured `--enable-vaapi --enable-opencl --enable-vulkan` is one way to get th
 Which Mesa the image carries is a **channel**, and every channel is defined in one place —
 [`channels.txt`](channels.txt). Nothing else in this repo pins a version.
 
-| Channel | What it is | `:latest`? |
-| --- | --- | --- |
-| `kisak` | Newest **tagged stable** Mesa release, from `ppa:kisak/kisak-mesa`. | yes |
-| `mesarc` | The 26.2 line, from `ppa:ernstp/mesarc`. | no |
+| Channel | What it is |
+| --- | --- |
+| `kisak` | Newest **tagged stable** Mesa release, from `ppa:kisak/kisak-mesa`. |
+| `mesarc` | The 26.2 line, from `ppa:ernstp/mesarc`. |
 
-`kisak` is the stable channel because Mesa's own 26.2.0 release notes say:
+**Every channel is built on every push**, independently, and each is published under its own
+tags. There is no default channel and no channel is privileged in the registry — which one you
+run is decided where you deploy, not here.
+
+Deploy `kisak` unless you have measured a reason not to, because Mesa's own 26.2.0 release
+notes say:
 
 > Mesa 26.2.0 is a new development release. People who are concerned with stability and
 > reliability should stick with a previous release or wait for Mesa 26.2.1.
@@ -77,7 +82,13 @@ it before promoting.
 
 ### Building a channel
 
-Run the workflow and pick `mesa_channel`. A push to `main` builds the stable channel.
+A push to `main` builds **every** channel in `channels.txt`, as independent matrix jobs. To
+build one on demand, run the workflow and pick it from `mesa_channel` (`all` is the default).
+
+Channels do not `fail-fast` on each other, and that is load-bearing rather than tidy: `mesarc`
+tracks a moving branch, so its pin **will** go stale and that build **will** start failing. When
+it does, `kisak` must still build and publish. Expect a red run whose kisak leg is green — that
+is the signal to re-pin mesarc, not a broken repo.
 
 Locally — no process substitution, so this works in any shell:
 
@@ -95,18 +106,20 @@ There are no `ARG` defaults: a build with no channel fails rather than silently 
     :<channel>                          moving pointer for that channel
     :<channel>-<version>                the exact build ('~' and '+' become '-')
     :<git sha>
-    :latest                             the stable channel only
 
 Run `./resolve-channel.sh <channel>` to see the exact tags a build would push.
 
-`:latest` follows whichever row `channels.txt` marks `stable`, so a one-off preview build
-cannot repoint it. **Deploy from a channel tag, or better a digest** — not from `:latest` — if
-you want to know which driver line you are on.
+**There is deliberately no `:latest`.** With several channels published side by side it would
+just be whichever built most recently, which is not what the name suggests. Pull a channel tag
+when you want that driver line, or a digest when you want exactly one build.
 
 ### Promoting a channel, or re-pinning
 
-Both are edits to `channels.txt` alone. Move the word `stable` to promote; change a version
-to re-pin. A PPA that publishes a newer version makes the exact-version install stop
+Both are edits to `channels.txt` alone: add a row for a new channel (and add its name to the
+workflow's dropdown, which GitHub requires to be a literal list), or change a version to
+re-pin. Nothing here decides what runs in production — consumers pull a channel tag, so
+switching driver line is their edit, not this one. A PPA that publishes a newer version makes
+the exact-version install stop
 resolving and the build **fails** rather than silently taking a different driver — that is
 the intended behaviour, and the fix is one line in one file.
 
@@ -140,7 +153,7 @@ Needs `--device /dev/dri --device /dev/kfd`. `vainfo` and `clinfo` are both alre
 
 ```bash
 podman run --rm --device /dev/dri --device /dev/kfd --security-opt label=disable \
-  ghcr.io/andyattebery/tdarr-node-mesa-fresh:latest \
+  ghcr.io/andyattebery/tdarr-node-mesa-fresh:kisak \
   bash -c 'cat /etc/tdarr-node-mesa-fresh.build; vainfo --display drm --device /dev/dri/renderD128; clinfo -l'
 ```
 

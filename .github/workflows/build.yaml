@@ -1,24 +1,26 @@
 name: 'Build and push'
 
-# Deliberately NOT scheduled. The image pins an exact Mesa version, so a nightly run would
-# either be a no-op or -- once the PPA publishes a newer version and the pin stops matching
-# -- a daily failure. Re-pinning is a deliberate act; this fires on push and on demand.
+# Deliberately NOT scheduled. Each channel pins an exact Mesa version, so a nightly run would
+# either be a no-op or -- once a PPA publishes a newer version and the pin stops matching --
+# a daily failure. Re-pinning is a deliberate act; this fires on push and on demand.
 on:
   push:
     branches: [main]
     paths:
       - 'Containerfile'
       - 'channels.txt'
+      - 'resolve-channel.sh'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
       mesa_channel:
-        description: 'Mesa channel (see channels.txt for what each one pins)'
+        description: 'Which channel to build (see channels.txt)'
         type: choice
         options:
+          - all
           - kisak
           - mesarc
-        default: kisak
+        default: all
 
 concurrency:
   group: build-push
@@ -32,24 +34,53 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  build:
-    name: 'Build and push'
+  # Turn channels.txt into the matrix. A push has no inputs, so it builds everything.
+  resolve:
+    name: 'Resolve channels'
     runs-on: ubuntu-latest
+    outputs:
+      channels: ${{ steps.list.outputs.channels }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 'List channels'
+        id: list
+        env:
+          WANT: ${{ inputs.mesa_channel }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WANT}" ] || [ "${WANT}" = all ]; then
+            channels=$(./resolve-channel.sh --list)
+          else
+            # Validate the name against the file rather than trusting the dropdown, which is a
+            # static literal list and can drift from channels.txt.
+            ./resolve-channel.sh "${WANT}" >/dev/null
+            channels="[\"${WANT}\"]"
+          fi
+          echo "channels=${channels}" >> "$GITHUB_OUTPUT"
+          echo "Building: ${channels}"
+
+  build:
+    name: 'Build ${{ matrix.channel }}'
+    needs: resolve
+    runs-on: ubuntu-latest
+    strategy:
+      # Channels are independent. mesarc tracks a moving branch, so its pin is expected to go
+      # stale and fail; that must not cancel a perfectly good kisak build.
+      fail-fast: false
+      matrix:
+        channel: ${{ fromJSON(needs.resolve.outputs.channels) }}
     steps:
       - uses: actions/checkout@v7
 
       # Everything about the Mesa source is derived here from channels.txt, so a version
       # string exists in exactly one place in this repo. The step also decides the tags,
       # which means a tag can never disagree with what was installed.
-      - name: 'Resolve channel and tags'
+      - name: 'Resolve ${{ matrix.channel }}'
         id: tags
-        env:
-          # Empty on a push event -- workflow_dispatch inputs do not exist there. Resolved
-          # below to whichever row is marked stable, so a push always builds the stable line.
-          WANT: ${{ inputs.mesa_channel }}
         run: |
           set -euo pipefail
-          ./resolve-channel.sh "${WANT}" >> "$GITHUB_OUTPUT"
+          ./resolve-channel.sh "${{ matrix.channel }}" >> "$GITHUB_OUTPUT"
           echo "--- resolved ---"
           cat "$GITHUB_OUTPUT"
 
@@ -72,24 +103,23 @@ jobs:
             MESA_PPA=${{ steps.tags.outputs.ppa }}
             MESA_VERSION=${{ steps.tags.outputs.version }}
           tags: ${{ steps.tags.outputs.list }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scope the cache per channel: the two share every layer up to the Mesa install and
+          # nothing after it, so one key would have them evicting each other.
+          cache-from: type=gha,scope=${{ matrix.channel }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.channel }}
 
-      # Pin deployments to the digest, not the tag. Printing it here saves digging it out
-      # of the package UI on every re-pin.
+      # Pin deployments to the digest, not the channel tag. Printing it here saves digging it
+      # out of the package UI on every re-pin.
       - name: 'Report what shipped'
         run: |
           set -euo pipefail
           {
-            echo '### Image'
+            echo "### ${{ matrix.channel }}"
             echo
             echo '```'
             echo "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
             echo '```'
             echo
-            echo '### Build inputs'
-            echo
-            echo "- Channel: \`${{ steps.tags.outputs.channel }}\`"
             echo "- MESA_PPA: \`${{ steps.tags.outputs.ppa }}\`"
             echo "- MESA_VERSION: \`${{ steps.tags.outputs.version }}\`"
             echo "- Tags: \`${{ steps.tags.outputs.list }}\`"

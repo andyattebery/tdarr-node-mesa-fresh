@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
-# Resolve a Mesa channel from channels.txt into build args and an image tag list.
+# Read channels.txt -- the only place a Mesa version is pinned.
 #
-#   ./resolve-channel.sh [channel]
+#   ./resolve-channel.sh --list        JSON array of every channel, for the build matrix
+#   ./resolve-channel.sh <channel>     `key=value` lines for $GITHUB_OUTPUT:
+#                                      channel, ppa, version, list
 #
-# An empty channel resolves to whichever row is marked `stable` -- that is the push-event
-# case, where workflow_dispatch inputs do not exist.
-#
-# Emits `key=value` lines for $GITHUB_OUTPUT: channel, ppa, version, list.
-# Exits non-zero, with a reason on stderr, rather than emitting anything questionable.
+# Exits non-zero with a reason on stderr rather than emitting anything questionable.
 set -euo pipefail
 
-want="${1-}"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 file="${CHANNELS_FILE:-$here/channels.txt}"
 image="${IMAGE:-ghcr.io/andyattebery/tdarr-node-mesa-fresh}"
@@ -21,35 +18,36 @@ die() { echo "resolve-channel: $*" >&2; exit 1; }
 
 # Strip comments and blank lines once; every pass below reads this.
 rows="$(sed 's/#.*//' "$file" | awk 'NF')"
-[ -n "$rows" ] && [ "$(echo "$rows" | awk 'NF!=4' | wc -l)" -eq 0 ] \
-  || die "every row needs exactly 4 fields (channel ppa version stability)"
+[ -n "$rows" ] || die "$file lists no channels"
+[ "$(echo "$rows" | awk 'NF!=3' | wc -l | tr -d ' ')" -eq 0 ] \
+  || die "every row needs exactly 3 fields (channel ppa version)"
 
-# Exactly one stable row. Zero means :latest silently stops being published; two means two
-# channels race for it. Neither announces itself, so it is asserted rather than assumed.
-stable_rows="$(echo "$rows" | awk '$4=="stable"')"
-n_stable="$(echo "$stable_rows" | awk 'NF' | wc -l | tr -d ' ')"
-[ "$n_stable" = 1 ] || die "expected exactly 1 stable channel in $file, found $n_stable"
-stable_channel="$(echo "$stable_rows" | awk '{print $1}')"
+names="$(echo "$rows" | awk '{print $1}')"
+[ "$(echo "$names" | sort -u | wc -l | tr -d ' ')" = "$(echo "$names" | wc -l | tr -d ' ')" ] \
+  || die "duplicate channel name in $file"
 
-[ -n "$want" ] || want="$stable_channel"
+# --list feeds `strategy.matrix`, which needs JSON. Emitted here rather than built with
+# string surgery in YAML, so the matrix and a single build read the same file the same way.
+if [ "${1-}" = --list ]; then
+  printf '['
+  printf '%s' "$names" | awk 'NR>1{printf ","} {printf "\"%s\"", $1}'
+  printf ']\n'
+  exit 0
+fi
+
+want="${1-}"
+[ -n "$want" ] || die "usage: resolve-channel.sh --list | <channel>"
 
 row="$(echo "$rows" | awk -v c="$want" '$1==c')"
-[ -n "$row" ] || die "no row for channel '$want' in $file (have: $(echo "$rows" | awk '{print $1}' | tr '\n' ' '))"
-[ "$(echo "$row" | wc -l | tr -d ' ')" = 1 ] || die "channel '$want' appears more than once in $file"
+[ -n "$row" ] || die "no row for channel '$want' in $file (have: $(echo "$names" | tr '\n' ' '))"
 
 channel="$(echo "$row" | awk '{print $1}')"
 ppa="$(echo "$row" | awk '{print $2}')"
 version="$(echo "$row" | awk '{print $3}')"
-stability="$(echo "$row" | awk '{print $4}')"
 
-case "$stability" in
-  stable|preview) ;;
-  *) die "stability for '$channel' must be stable or preview, got '$stability'" ;;
-esac
-
-# The version must carry the channel's own marker. This no longer guards user input -- a
-# mismatched pair is not expressible any more -- it guards THIS FILE: a mesarc version
-# pasted into the kisak row would otherwise ship an image tagged :kisak carrying 26.2.
+# The version must carry the channel's own name. This does not guard user input -- the
+# channel is a closed choice -- it guards THIS FILE: a mesarc version pasted into the kisak
+# row would otherwise ship an image tagged :kisak carrying 26.2.
 case "$version" in
   *"$channel"*) ;;
   *) die "version '$version' does not contain '$channel'; wrong row?" ;;
@@ -59,10 +57,8 @@ esac
 # '~' and '+'.
 safe_version="$(printf '%s' "$version" | tr '~+' '--')"
 
+# No :latest and no floating cross-channel tag: every tag names the channel or the build.
 list="${image}:${channel},${image}:${channel}-${safe_version},${image}:${GITHUB_SHA:-local}"
-# :latest follows the stable row only, so a one-off preview build cannot repoint it and
-# quietly hand a development-release driver to anything deploying from that tag.
-[ "$stability" = stable ] && list="${list},${image}:latest"
 
 for t in $(echo "$list" | tr ',' ' '); do
   tag="${t##*:}"
