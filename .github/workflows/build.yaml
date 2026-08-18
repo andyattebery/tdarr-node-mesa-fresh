@@ -1,0 +1,125 @@
+name: 'Build and push'
+
+# Deliberately NOT scheduled. The image pins an exact Mesa version, so a nightly run would
+# either be a no-op or -- once the PPA publishes a newer version and the pin stops matching
+# -- a daily failure. Re-pinning is a deliberate act; this fires on push and on demand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Containerfile'
+      - '.github/workflows/build.yaml'
+  workflow_dispatch:
+    inputs:
+      mesa_ppa:
+        description: 'Mesa PPA (must match mesa_version)'
+        type: choice
+        options:
+          - 'ppa:kisak/kisak-mesa'
+          - 'ppa:ernstp/mesarc'
+        default: 'ppa:kisak/kisak-mesa'
+      mesa_version:
+        description: 'Exact Mesa package version. kisak: 26.1.7~kisak1~n | mesarc: 26.2.0+git2608121546.5cdfde45036~n~mesarc0'
+        type: string
+        default: '26.1.7~kisak1~n'
+      tag_suffix:
+        description: 'Extra tag for this build, e.g. mesa-26.2 (blank = none)'
+        type: string
+        default: ''
+
+concurrency:
+  group: build-push
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: 'Build and push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The two Mesa inputs are only valid as a pair -- a version string exists in exactly
+      # one PPA. Catching a mismatched pair here costs seconds; catching it in the apt gate
+      # costs a full image build.
+      - name: 'Check the PPA/version pair'
+        env:
+          PPA: ${{ inputs.mesa_ppa || 'ppa:kisak/kisak-mesa' }}
+          VER: ${{ inputs.mesa_version || '26.1.7~kisak1~n' }}
+        run: |
+          set -euo pipefail
+          case "$PPA" in
+            ppa:kisak/kisak-mesa) want='~kisak' ;;
+            ppa:ernstp/mesarc)    want='~mesarc' ;;
+            *) echo "Unknown PPA $PPA -- add it to this check before using it."; exit 1 ;;
+          esac
+          case "$VER" in
+            *"$want"*) echo "OK: $VER looks like a $PPA version" ;;
+            *) echo "FATAL: version '$VER' does not match PPA '$PPA' (expected to contain '$want')"; exit 1 ;;
+          esac
+
+      - name: 'Assemble tag list'
+        id: tags
+        env:
+          SUFFIX: ${{ inputs.tag_suffix }}
+        run: |
+          set -euo pipefail
+          list="${IMAGE}:latest,${IMAGE}:${GITHUB_SHA}"
+          if [ -n "${SUFFIX}" ]; then
+            list="${list},${IMAGE}:${SUFFIX}"
+          fi
+          echo "list=${list}" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 'Build and push'
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Containerfile
+          push: true
+          build-args: |
+            MESA_PPA=${{ inputs.mesa_ppa || 'ppa:kisak/kisak-mesa' }}
+            MESA_VERSION=${{ inputs.mesa_version || '26.1.7~kisak1~n' }}
+          tags: ${{ steps.tags.outputs.list }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pin deployments to the digest, not the tag. Printing it here saves digging it out
+      # of the package UI on every re-pin.
+      - name: 'Report what shipped'
+        run: |
+          set -euo pipefail
+          {
+            echo '### Image'
+            echo
+            echo '```'
+            echo "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}"
+            echo '```'
+            echo
+            echo '### Build inputs'
+            echo
+            echo "- MESA_PPA: \`${{ inputs.mesa_ppa || 'ppa:kisak/kisak-mesa' }}\`"
+            echo "- MESA_VERSION: \`${{ inputs.mesa_version || '26.1.7~kisak1~n' }}\`"
+            echo
+            echo 'Mesa actually installed, read back out of the image:'
+            echo
+            echo '```'
+            docker run --rm --entrypoint cat \
+              "${{ env.IMAGE }}@${{ steps.build.outputs.digest }}" \
+              /etc/tdarr-node-mesa-fresh.build
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
