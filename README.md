@@ -51,31 +51,64 @@ yours is not, supply one by bind-mounting it and pointing Tdarr's `ffmpegPath` a
 keeps the encoder and the driver as separately upgradable pieces. A jellyfin-ffmpeg build
 configured `--enable-vaapi --enable-opencl --enable-vulkan` is one way to get there.
 
-## Which Mesa
+## Channels
 
-`MESA_PPA` and `MESA_VERSION` are build arguments and **only valid as a pair** — a version
-string exists in exactly one PPA. Verified present for noble/amd64 on 2026-08-17:
+Which Mesa the image carries is a **channel**, and every channel is defined in one place —
+[`channels.txt`](channels.txt). Nothing else in this repo pins a version.
 
-| PPA | Version | Notes |
+| Channel | What it is | `:latest`? |
 | --- | --- | --- |
-| `ppa:kisak/kisak-mesa` | `26.1.7~kisak1~n` | **Default.** Tagged stable point release. |
-| `ppa:ernstp/mesarc` | `26.2.0+git2608121546.5cdfde45036~n~mesarc0` | `staging/26.2` HEAD. |
+| `kisak` | Newest **tagged stable** Mesa release, from `ppa:kisak/kisak-mesa`. | yes |
+| `mesarc` | The 26.2 line, from `ppa:ernstp/mesarc`. | no |
 
-The default is 26.1.7 because Mesa's own 26.2.0 release notes say:
+`kisak` is the stable channel because Mesa's own 26.2.0 release notes say:
 
 > Mesa 26.2.0 is a new development release. People who are concerned with stability and
 > reliability should stick with a previous release or wait for Mesa 26.2.1.
 
-**26.2.1 does not exist yet.** mesarc's build is not an arbitrary snapshot — its commit
-`5cdfde45036` is `staging/26.2` HEAD exactly, i.e. 26.2.1-in-progress, and its earlier
-`~rc2`/`~rc3` publications match the `mesa-26.2.0-rc2`/`-rc3` tags commit-for-commit. It is
-therefore the closest thing to a stable 26.2 that exists, and it is one dispatch input away.
+**26.2.1 does not exist yet.** mesarc is not an arbitrary snapshot, though: it builds
+`staging/26.2` — the branch that becomes 26.2.1 — and its earlier `~rc2`/`~rc3` publications
+match the `mesa-26.2.0-rc2`/`-rc3` tags commit-for-commit. It is the closest thing to a stable
+26.2 that exists, which is why it is offered at all.
 
 26.2 is worth wanting for one reason: `va: Set contiguous_planes for DMA-BUF imported
-surfaces`, which may unblock a zero-copy filter path. That benefit is **unverified** — do not
-switch the default until it is measured.
+surfaces`, which may unblock a zero-copy filter path. That benefit is **unverified** — measure
+it before promoting.
 
-To build 26.2, run the workflow with both inputs changed together.
+### Building a channel
+
+Run the workflow and pick `mesa_channel`. A push to `main` builds the stable channel.
+
+Locally — no process substitution, so this works in any shell:
+
+```sh
+set -- $(grep '^kisak' channels.txt)
+docker build --build-arg MESA_PPA="$2" --build-arg MESA_VERSION="$3" -t tdarr-node-mesa-fresh .
+```
+
+`./resolve-channel.sh <channel>` prints the same values, and is what the workflow uses.
+
+There are no `ARG` defaults: a build with no channel fails rather than silently picking one.
+
+### Tags
+
+    :<channel>                          moving pointer for that channel
+    :<channel>-<version>                the exact build ('~' and '+' become '-')
+    :<git sha>
+    :latest                             the stable channel only
+
+Run `./resolve-channel.sh <channel>` to see the exact tags a build would push.
+
+`:latest` follows whichever row `channels.txt` marks `stable`, so a one-off preview build
+cannot repoint it. **Deploy from a channel tag, or better a digest** — not from `:latest` — if
+you want to know which driver line you are on.
+
+### Promoting a channel, or re-pinning
+
+Both are edits to `channels.txt` alone. Move the word `stable` to promote; change a version
+to re-pin. A PPA that publishes a newer version makes the exact-version install stop
+resolving and the build **fails** rather than silently taking a different driver — that is
+the intended behaviour, and the fix is one line in one file.
 
 ## Packaging traps this image works around
 

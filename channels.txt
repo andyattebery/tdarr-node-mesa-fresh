@@ -1,0 +1,20 @@
+# Mesa channels. THIS FILE IS THE ONLY PLACE A VERSION IS PINNED.
+#
+# Fields, separated by any run of whitespace:
+#
+#   channel   ppa                    version                     stability
+#
+# stability is `stable` or `preview`. Exactly one row must be `stable`: it is the
+# channel that :latest follows, and the one a push build (which carries no inputs)
+# uses. Promoting a channel means moving the word `stable`, not editing a workflow.
+#
+# The version must contain the PPA's own marker (~kisak / ~mesarc). The build checks
+# this, because a version pasted into the wrong row would produce an image tagged with
+# one channel while carrying the other's driver.
+#
+# Re-pinning: when a PPA publishes a newer version the exact-version install stops
+# resolving and the build fails loudly. That is deliberate. Fix it here, and only here.
+
+# channel  ppa                    version                                     stability
+kisak      ppa:kisak/kisak-mesa   26.1.7~kisak1~n                             stable
+mesarc     ppa:ernstp/mesarc      26.2.0+git2608121546.5cdfde45036~n~mesarc0  preview

@@ -11,17 +11,15 @@ FROM ghcr.io/haveagitgat/tdarr_node@sha256:7542459ac5ed5cd299600530e9625b9d59062
 # ring-timeout fix and `radeonsi/vcn: Remove encode op_preset overrides`, the latter meaning
 # the encoder silently ignores -compression_level on VCN5. See the README for the full list.
 #
-# These two ALWAYS move together -- a version string is only valid for the PPA that
-# published it. Verified present for noble/amd64 on 2026-08-17:
+# NO DEFAULTS, on purpose. The versions live in channels.txt and nowhere else; a default
+# here would be a second source of truth that can drift from it, and a bare `docker build .`
+# would quietly produce an image nobody chose. Both values are required, and the guard in
+# the RUN below fails the build if either is missing.
 #
-#   kisak   ppa:kisak/kisak-mesa   26.1.7~kisak1~n                             <- default
-#   mesarc  ppa:ernstp/mesarc      26.2.0+git2608121546.5cdfde45036~n~mesarc0
-#
-# Default is kisak: 26.1.7 is a tagged stable point release. Mesa's own 26.2.0 notes call it
-# "a new development release ... wait for Mesa 26.2.1", and 26.2.1 does not exist yet.
-# mesarc's build is staging/26.2 HEAD (commit 5cdfde45036), i.e. 26.2.1-in-progress.
-ARG MESA_PPA=ppa:kisak/kisak-mesa
-ARG MESA_VERSION=26.1.7~kisak1~n
+#   ./resolve-channel.sh kisak     -- prints the pair for a channel
+#   README.md                      -- the two-line local build
+ARG MESA_PPA=
+ARG MESA_VERSION=
 
 # --- ROCm -------------------------------------------------------------------------------
 # tonemap_opencl needs an OpenCL platform. tonemap_vaapi is NOT an alternative: radeonsi's
@@ -32,6 +30,12 @@ ARG ROCM_VERSION=7.2.4
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN set -eux; \
+    # Required, not defaulted -- see the ARG block. An unset MESA_VERSION would make the apt
+    # pin match nothing, which apt treats as success, so this has to be caught up front.
+    test -n "${MESA_PPA}" \
+      || { echo "FATAL: MESA_PPA is unset. Pass --build-arg MESA_PPA=... (see channels.txt)"; exit 1; }; \
+    test -n "${MESA_VERSION}" \
+      || { echo "FATAL: MESA_VERSION is unset. Pass --build-arg MESA_VERSION=... (see channels.txt)"; exit 1; }; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     # All four are already in the base image; listed so this does not silently depend on
