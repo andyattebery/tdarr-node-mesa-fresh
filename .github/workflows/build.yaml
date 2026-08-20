@@ -1,15 +1,22 @@
 name: 'Build and push'
 
-# Deliberately NOT scheduled. Each channel pins an exact Mesa version, so a nightly run would
-# either be a no-op or -- once a PPA publishes a newer version and the pin stops matching --
-# a daily failure. Re-pinning is a deliberate act; this fires on push and on demand.
+# Scheduled, because channels.txt is no longer hand-maintained: refresh-channels.py writes
+# whatever each PPA currently has installable on noble/amd64, and the run then builds only the
+# channels that moved. Most days that is nothing, and a run that builds nothing is a success.
+#
+# The refresh and the build deliberately share one run. A push made with GITHUB_TOKEN does not
+# trigger `on: push`, so a bot commit to channels.txt cannot kick off a build of its own -- the
+# run that writes the pin has to be the run that builds it.
 on:
+  schedule:
+    - cron: '17 6 * * *'
   push:
     branches: [main]
     paths:
       - 'Containerfile'
       - 'channels.txt'
       - 'resolve-channel.sh'
+      - 'refresh-channels.py'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
@@ -21,35 +28,71 @@ on:
           - kisak
           - mesarc
         default: all
+      refresh:
+        description: 'Refresh pins from the PPAs first, then build only what moved (ignores the channel above)'
+        type: boolean
+        default: false
 
 concurrency:
   group: build-push
   cancel-in-progress: false
 
 permissions:
-  contents: read
+  # write, not read: the refresh commits channels.txt back to the branch.
+  contents: write
   packages: write
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
-  # Turn channels.txt into the matrix. A push has no inputs, so it builds everything.
+  # Decide what to build, and -- in refresh mode -- move the pins first.
   resolve:
     name: 'Resolve channels'
     runs-on: ubuntu-latest
     outputs:
       channels: ${{ steps.list.outputs.channels }}
+      sha: ${{ steps.list.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
+
+      # Refresh mode is `schedule` or a dispatch with refresh=true. The dispatch exists so this
+      # path can be rehearsed without waiting for cron, so it must behave exactly as cron does --
+      # which is why it ignores mesa_channel and builds only what moved.
+      - name: 'Refresh pins from the PPAs'
+        id: refresh
+        if: github.event_name == 'schedule' || inputs.refresh
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          changed="$(python3 refresh-channels.py --write)"
+          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
+          if [ "${changed}" = '[]' ]; then
+            echo "No channel moved; nothing to commit."
+            exit 0
+          fi
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add channels.txt
+          git commit -m "channels: follow PPAs for $(echo "${changed}" | tr -d '[]"' | tr ',' ' ')"
+          # Push BEFORE anything is built or published, and to an explicit refspec because
+          # actions/checkout leaves a detached HEAD. If a human pushed while this run was in
+          # flight the push is rejected and the run fails having shipped nothing; the next run
+          # redoes the refresh from the new tip. That is preferred to forcing.
+          git push origin "HEAD:${BRANCH}"
 
       - name: 'List channels'
         id: list
         env:
           WANT: ${{ inputs.mesa_channel }}
+          REFRESHED: ${{ github.event_name == 'schedule' || inputs.refresh }}
+          CHANGED: ${{ steps.refresh.outputs.changed }}
         run: |
           set -euo pipefail
-          if [ -z "${WANT}" ] || [ "${WANT}" = all ]; then
+          if [ "${REFRESHED}" = true ]; then
+            channels="${CHANGED:-[]}"
+          elif [ -z "${WANT}" ] || [ "${WANT}" = all ]; then
             channels=$(./resolve-channel.sh --list)
           else
             # Validate the name against the file rather than trusting the dropdown, which is a
@@ -58,20 +101,29 @@ jobs:
             channels="[\"${WANT}\"]"
           fi
           echo "channels=${channels}" >> "$GITHUB_OUTPUT"
+          # The build job checks this out rather than github.sha, which on a refresh run is the
+          # tip from before the commit above -- it would build the previous pin.
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "Building: ${channels}"
 
   build:
     name: 'Build ${{ matrix.channel }}'
     needs: resolve
+    # A refresh that moved nothing yields []. Without this guard that is a hard error --
+    # "Matrix vector 'channel' does not contain any values" -- not a skip, and since most
+    # scheduled runs move nothing, this is what keeps the everyday run green.
+    if: needs.resolve.outputs.channels != '[]'
     runs-on: ubuntu-latest
     strategy:
-      # Channels are independent. mesarc tracks a moving branch, so its pin is expected to go
-      # stale and fail; that must not cancel a perfectly good kisak build.
+      # Channels are independent. A PPA can publish a build that trips one of the Containerfile's
+      # gates; that must not cancel a perfectly good build of the other one.
       fail-fast: false
       matrix:
         channel: ${{ fromJSON(needs.resolve.outputs.channels) }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
 
       # Everything about the Mesa source is derived here from channels.txt, so a version
       # string exists in exactly one place in this repo. The step also decides the tags,

@@ -56,25 +56,21 @@ configured `--enable-vaapi --enable-opencl --enable-vulkan` is one way to get th
 Which Mesa the image carries is a **channel**, and every channel is defined in one place —
 [`channels.txt`](channels.txt). Nothing else in this repo pins a version.
 
-| Channel | What it is |
+| Channel | What it tracks |
 | --- | --- |
-| `kisak` | Newest **tagged stable** Mesa release, from `ppa:kisak/kisak-mesa`. |
-| `mesarc` | The 26.2 line, from `ppa:ernstp/mesarc`. |
+| `kisak` | Mesa's **tagged point releases**, from `ppa:kisak/kisak-mesa`. |
+| `mesarc` | Snapshots of Mesa's **current staging branch** (`staging/26.2` as of 2026-08), from `ppa:ernstp/mesarc`. |
 
 **Every channel is built on every push**, independently, and each is published under its own
 tags. There is no default channel and no channel is privileged in the registry — which one you
 run is decided where you deploy, not here.
 
-Deploy `kisak` unless you have measured a reason not to, because Mesa's own 26.2.0 release
-notes say:
-
-> Mesa 26.2.0 is a new development release. People who are concerned with stability and
-> reliability should stick with a previous release or wait for Mesa 26.2.1.
-
-**26.2.1 does not exist yet.** mesarc is not an arbitrary snapshot, though: it builds
-`staging/26.2` — the branch that becomes 26.2.1 — and its earlier `~rc2`/`~rc3` publications
-match the `mesa-26.2.0-rc2`/`-rc3` tags commit-for-commit. It is the closest thing to a stable
-26.2 that exists, which is why it is offered at all.
+The two differ in how their version moves, not in rank. `kisak` publishes when Mesa tags a point
+release, so its pin sits still in between. `mesarc` republishes snapshots of a branch, so its pin
+moves more often and can carry commits that are in no release yet. 26.2.1 shipped on 2026-08-20
+as, in Mesa's own words, *"a bug fix release which fixes bugs found since the 26.2.0 release"* —
+so the 26.2 line has a stable point release behind it now, and mesarc tracks the branch
+continuing past it.
 
 26.2 is worth wanting for one reason: `va: Set contiguous_planes for DMA-BUF imported
 surfaces`, which may unblock a zero-copy filter path. That benefit is **unverified** — measure
@@ -85,10 +81,22 @@ it before promoting.
 A push to `main` builds **every** channel in `channels.txt`, as independent matrix jobs. To
 build one on demand, run the workflow and pick it from `mesa_channel` (`all` is the default).
 
-Channels do not `fail-fast` on each other, and that is load-bearing rather than tidy: `mesarc`
-tracks a moving branch, so its pin **will** go stale and that build **will** start failing. When
-it does, `kisak` must still build and publish. Expect a red run whose kisak leg is green — that
-is the signal to re-pin mesarc, not a broken repo.
+A **daily scheduled run** does something different. It first runs `refresh-channels.py`, which
+asks each PPA what it currently has installable on noble/amd64, writes that into `channels.txt`
+and commits it — then builds only the channels whose version actually moved. Most days nothing
+moves, and the run finishes green having built nothing. That is the normal outcome, not a
+misfire.
+
+The refresh and the build share one run because a push made with `GITHUB_TOKEN` does not trigger
+`on: push`: a bot commit cannot start a build of its own, so the run that writes the pin has to
+be the run that builds it. To rehearse that path without waiting for cron, dispatch the workflow
+with `refresh` ticked — it behaves exactly as the scheduled run does, including ignoring
+`mesa_channel`.
+
+Channels do not `fail-fast` on each other, and that is load-bearing rather than tidy: a PPA can
+publish a build that trips one of the Containerfile's gates, and when that happens the other
+channel must still build and publish. Expect a run with one red leg and one green — that is the
+design working, not a broken repo.
 
 Locally — no process substitution, so this works in any shell:
 
@@ -113,15 +121,22 @@ Run `./resolve-channel.sh <channel>` to see the exact tags a build would push.
 just be whichever built most recently, which is not what the name suggests. Pull a channel tag
 when you want that driver line, or a digest when you want exactly one build.
 
-### Promoting a channel, or re-pinning
+### Adding a channel, or freezing one
 
-Both are edits to `channels.txt` alone: add a row for a new channel (and add its name to the
-workflow's dropdown, which GitHub requires to be a literal list), or change a version to
-re-pin. Nothing here decides what runs in production — consumers pull a channel tag, so
-switching driver line is their edit, not this one. A PPA that publishes a newer version makes
-the exact-version install stop
-resolving and the build **fails** rather than silently taking a different driver — that is
-the intended behaviour, and the fix is one line in one file.
+Adding a channel is an edit to `channels.txt` alone — a row naming the channel, its PPA and any
+version, since the next refresh corrects it — plus its name in the workflow's dropdown, which
+GitHub requires to be a literal list. Nothing here decides what runs in production; consumers
+pull a channel tag or a digest, so switching driver line is their edit, not this one.
+
+Re-pinning, though, is no longer something you do: the daily refresh writes whatever the PPA
+publishes. A hand edit still works, but only until the next run overwrites it. To make a pin
+stick — to roll back, or to sit out a bad publication — add `hold` as a fourth field. Here the
+channel is being kept on an older release while a newer one is already in the PPA:
+
+    kisak      ppa:kisak/kisak-mesa   26.1.6~kisak1~n   hold
+
+The refresh skips a held row entirely and reports it as held. `hold` is the only value that
+field accepts; anything else fails the build rather than quietly reading as "not held".
 
 ## Packaging traps this image works around
 
@@ -139,8 +154,8 @@ clean-looking image with a broken driver.
   leaves `radeonsi_drv_video.so` dangling into a `libgallium-<ver>.so` that is gone, and apt
   will not stop you. The build tests that the symlink resolves.
 - **`mesa-vdpau-drivers` is purged.** VDPAU is unused here, and mesarc versions it
-  inconsistently (25.2.5 while everything else is 26.2.0), which would otherwise force a
-  downgrade or strand a symlink.
+  inconsistently — it sits several releases behind the rest of that PPA's Mesa stack — which
+  would otherwise force a downgrade or strand a symlink.
 - **An apt version pin that matches nothing is a no-op, not an error.** Without the build-time
   assertion the image would build clean, ship 25.2.8, and pass every runtime check against the
   wrong driver.

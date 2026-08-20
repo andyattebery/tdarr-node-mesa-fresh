@@ -1,0 +1,6 @@
+# agent working notes -- never published. These may name real hosts, IPs and WAN
+# details plainly, which is exactly why they stay out of a public repo.
+tasks/
+plans/
+
+__pycache__/

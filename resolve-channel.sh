@@ -19,8 +19,14 @@ die() { echo "resolve-channel: $*" >&2; exit 1; }
 # Strip comments and blank lines once; every pass below reads this.
 rows="$(sed 's/#.*//' "$file" | awk 'NF')"
 [ -n "$rows" ] || die "$file lists no channels"
-[ "$(echo "$rows" | awk 'NF!=3' | wc -l | tr -d ' ')" -eq 0 ] \
-  || die "every row needs exactly 3 fields (channel ppa version)"
+[ "$(echo "$rows" | awk 'NF<3 || NF>4' | wc -l | tr -d ' ')" -eq 0 ] \
+  || die "every row needs 3 or 4 fields (channel ppa version [hold])"
+
+# Field 4 is the freeze marker read by refresh-channels.py, and 'hold' is its only legal value.
+# Checked here, in the script every build runs, so a typo'd marker cannot quietly read as
+# "not frozen" and let the next refresh overwrite a deliberate pin.
+[ "$(echo "$rows" | awk 'NF==4 && $4!="hold"' | wc -l | tr -d ' ')" -eq 0 ] \
+  || die "field 4, when present, must be exactly 'hold'"
 
 names="$(echo "$rows" | awk '{print $1}')"
 [ "$(echo "$names" | sort -u | wc -l | tr -d ' ')" = "$(echo "$names" | wc -l | tr -d ' ')" ] \

@@ -44,8 +44,9 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg software-properties-common; \
     \
     # VDPAU is unused here (the node encodes through VA-API) and the PPAs version it
-    # inconsistently -- mesarc lags it at 25.2.5 while shipping 26.2.0 for everything else,
-    # which would force a downgrade or strand a symlink into a libgallium that is gone.
+    # inconsistently -- mesarc has left it several releases behind the rest of its Mesa stack,
+    # which would force a downgrade or strand a symlink into a libgallium that is gone. No
+    # version named here on purpose: the pins now follow the PPAs, so a number would go stale.
     # Simulated against the running node: removes exactly mesa-vdpau-drivers and
     # vdpau-driver-all, nothing else.
     apt-get purge -y mesa-vdpau-drivers; \

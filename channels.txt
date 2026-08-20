@@ -1,25 +1,32 @@
 # Mesa channels. THIS FILE IS THE ONLY PLACE A VERSION IS PINNED.
 #
-# Fields, separated by any run of whitespace:
+# Fields, separated by any run of whitespace. The fourth is optional:
 #
-#   channel   ppa                    version
+#   channel   ppa                    version   [hold]
 #
 # A push builds every channel listed here. There is no default channel and no
 # :latest tag: with several channels published side by side, both would only be
 # ambiguous. Every image tag names either the channel or the exact build.
 #
-# `kisak` is the one to deploy unless you have measured a reason not to -- it is
-# the newest tagged stable Mesa. `mesarc` is the 26.2 line, which Mesa itself
-# labels a development release. See README.md.
+# `kisak` follows Mesa's tagged point releases, so its version moves when one is
+# released. `mesarc` builds snapshots of Mesa's current staging branch (staging/26.2
+# as of 2026-08), so its version moves whenever that branch is republished. Neither
+# channel is privileged here; which one you run is decided where you deploy.
+# See README.md.
 #
 # The version must contain the channel's own name (~kisak / ~mesarc). The build
 # checks this, because a version pasted into the wrong row would produce an image
 # tagged with one channel while carrying the other's driver.
 #
-# Re-pinning: when a PPA publishes a newer version the exact-version install stops
-# resolving and that channel's build fails loudly. That is deliberate. Fix it here,
-# and only here. Channels build independently, so one stale pin does not stop the
-# others.
+# The version fields are maintained by refresh-channels.py, which runs daily and
+# writes whatever the PPA currently has installable on noble/amd64 -- so these
+# rows follow the PPAs rather than recording a decision someone made. A hand edit
+# is fine but temporary: the next refresh overwrites it.
+#
+# To freeze a channel, add `hold` as a fourth field. The refresh then leaves that
+# row alone until it is removed, which is how a deliberate pin -- a rollback, or
+# sitting out a bad publication -- survives the bot. `hold` is the only value the
+# field may take; anything else fails the build rather than reading as "not held".
 
 # channel  ppa                    version
 kisak      ppa:kisak/kisak-mesa   26.1.7~kisak1~n
