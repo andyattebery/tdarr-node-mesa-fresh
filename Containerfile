@@ -1,5 +1,4 @@
-# Tdarr node for RDNA 4 (gfx1201, VCN 5.0): the stock image, plus a Mesa above the VCN5
-# floor and a ROCm OpenCL runtime for tonemap_opencl.
+# Tdarr node for RDNA 4 (gfx1201, VCN 5.0): the stock image, plus a Mesa above the VCN5 floor.
 #
 # Base pinned by digest, not by tag: `latest` moves, and a transcode node's driver stack
 # should not change under it unannounced.
@@ -21,12 +20,6 @@ FROM ghcr.io/haveagitgat/tdarr_node@sha256:7542459ac5ed5cd299600530e9625b9d59062
 ARG MESA_PPA=
 ARG MESA_VERSION=
 
-# --- ROCm -------------------------------------------------------------------------------
-# tonemap_opencl needs an OpenCL platform. tonemap_vaapi is NOT an alternative: radeonsi's
-# VPP reports "VAAPI driver doesn't support HDR" (that filter is Intel iHD only), and
-# libplacebo/Vulkan works but benchmarked slower than OpenCL on this card.
-ARG ROCM_VERSION=7.2.4
-
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN set -eux; \
@@ -38,10 +31,10 @@ RUN set -eux; \
       || { echo "FATAL: MESA_VERSION is unset. Pass --build-arg MESA_VERSION=... (see channels.txt)"; exit 1; }; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
-    # All four are already in the base image; listed so this does not silently depend on
+    # All three are already in the base image; listed so this does not silently depend on
     # that staying true. Because they are pre-existing, none of them is purged afterwards --
     # stripping something the base shipped is not this image's business.
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg software-properties-common; \
+    apt-get install -y --no-install-recommends ca-certificates gnupg software-properties-common; \
     \
     # VDPAU is unused here (the node encodes through VA-API) and the PPAs version it
     # inconsistently -- mesarc has left it several releases behind the rest of its Mesa stack,
@@ -59,12 +52,8 @@ RUN set -eux; \
     printf 'Package: *\nPin: version %s\nPin-Priority: 1001\n' "${MESA_VERSION}" \
       > /etc/apt/preferences.d/99-mesa-pin; \
     \
-    install -m 0755 -d /etc/apt/keyrings; \
-    curl -fsSL https://repo.radeon.com/rocm/rocm.gpg.key \
-      | gpg --dearmor -o /etc/apt/keyrings/rocm.gpg; \
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${ROCM_VERSION} noble main" \
-      > /etc/apt/sources.list.d/rocm.list; \
-    \
+    # add-apt-repository already refreshes, but only as an implementation detail of
+    # software-properties-common. Cheap to not depend on that.
     apt-get update; \
     # dist-upgrade, not upgrade: from Mesa 26.0 the VA driver was folded into
     # mesa-libgallium, which Breaks/Replaces mesa-va-drivers (<< 26.0.0~). Resolving that
@@ -77,7 +66,6 @@ RUN set -eux; \
     # by rebuilding. The Mesa version, which is the measurement-relevant variable, is pinned
     # and recorded in /etc/tdarr-node-mesa-fresh.build.
     apt-get dist-upgrade -y; \
-    apt-get install -y --no-install-recommends rocm-opencl-runtime; \
     \
     # NO autoremove. Simulated against the running node it would remove 150+ packages the
     # base image ships -- libavdevice60, libavfilter9, libplacebo338, libass9, the whole GTK
@@ -97,21 +85,14 @@ RUN set -eux; \
     # Follows the symlink. mesa-va-drivers carries no versioned dependency on
     # mesa-libgallium, so a mismatched pair yields a dangling link and silent VA-API death.
     test -e /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so \
-      || { echo "FATAL: radeonsi_drv_video.so missing or dangling"; exit 1; }; \
-    # The ICD filename carries the ROCm build (amdocl64_70204_93.icd), so match a glob,
-    # never a fixed name. The ICD itself just says "libamdocl64.so", which resolves through
-    # the /etc/ld.so.conf.d/10-rocm-opencl.conf the package ships -- so check both halves.
-    ls /etc/OpenCL/vendors/amdocl64*.icd >/dev/null 2>&1 \
-      || { echo "FATAL: no AMD OpenCL ICD registered"; exit 1; }; \
-    ldconfig -p | grep -q libamdocl64.so \
-      || { echo "FATAL: libamdocl64.so not on the loader path"; exit 1; }
+      || { echo "FATAL: radeonsi_drv_video.so missing or dangling"; exit 1; }
 
 # Stamped from the installed package, not echoed back from the ARG, so the label describes
 # what is actually in the image.
-RUN printf 'MESA_VERSION=%s\nMESA_PPA=%s\nROCM_VERSION=%s\n' \
-      "$(dpkg-query -W -f='${Version}' mesa-libgallium)" "${MESA_PPA}" "${ROCM_VERSION}" \
+RUN printf 'MESA_VERSION=%s\nMESA_PPA=%s\n' \
+      "$(dpkg-query -W -f='${Version}' mesa-libgallium)" "${MESA_PPA}" \
       > /etc/tdarr-node-mesa-fresh.build
 
 LABEL org.opencontainers.image.source="https://github.com/andyattebery/tdarr-node-mesa-fresh"
-LABEL org.opencontainers.image.description="Tdarr node with fresh Mesa (VA-API on gfx1201) and ROCm OpenCL"
+LABEL org.opencontainers.image.description="Tdarr node with fresh Mesa (VA-API on gfx1201)"
 LABEL org.opencontainers.image.base.name="ghcr.io/haveagitgat/tdarr_node"

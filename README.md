@@ -1,11 +1,10 @@
 # tdarr-node-mesa-fresh
 
-The stock Tdarr node image, plus the two things an **RDNA 4** card needs for VA-API
-transcoding and does not have: a **Mesa new enough to drive gfx1201 correctly**, and a
-**ROCm OpenCL runtime** for `tonemap_opencl`.
+The stock Tdarr node image, plus the one thing an **RDNA 4** card needs for VA-API
+transcoding and does not have: a **Mesa new enough to drive gfx1201 correctly**.
 
 Written against a **Radeon RX 9070 XT (Navi 48, gfx1201, VCN 5.0)**. Nothing here is specific
-to a particular deployment — it is the stock image plus two packages.
+to a particular deployment — it is the stock image plus a newer Mesa.
 
 ```
 ghcr.io/andyattebery/tdarr-node-mesa-fresh
@@ -15,9 +14,9 @@ ghcr.io/andyattebery/tdarr-node-mesa-fresh
 
 The stock image (`ghcr.io/haveagitgat/tdarr_node`) is **Ubuntu 24.04.4 with Mesa 25.2.8**, and
 it *does* already encode `hevc_vaapi` and `av1_vaapi` on this card — RDNA 4 support landed in
-Mesa 25.0. So this is not about making the GPU work at all. Two specific gaps remain:
+Mesa 25.0. So this is not about making the GPU work at all. One specific gap remains.
 
-**1. Mesa 25.2.8 is below the floor for VCN 5.0.** Missing from it:
+**Mesa 25.2.8 is below the floor for VCN 5.0.** Missing from it:
 
 - the fix for a bug report naming this exact GPU — `[radeonsi/VCN] RX 9070 XT (Navi 48,
   gfx1201): VCN unified ring timeout during VAAPI HEVC encode` (Mesa 26.1.2)
@@ -28,28 +27,16 @@ Mesa 25.0. So this is not about making the GPU work at all. Two specific gaps re
 - an AV1/HEVC encode coded-buffer overrun that segfaults the client (26.1.6)
 - the `ac_video_dec` decode rewrite (26.1.0), in the hot path for 4K HEVC input
 
-**2. There is no OpenCL platform**, so `tonemap_opencl` cannot initialise
-(`Failed to get number of OpenCL platforms: -1001`).
-
-Neither alternative tonemapper is a substitute, and both were measured rather than assumed:
-
-- `tonemap_vaapi` → **`VAAPI driver doesn't support HDR`**. That VPP capability is Intel iHD
-  only; radeonsi advertises `VAProfileNone: VAEntrypointVideoProc` with no HDR filter.
-- `libplacebo` on Vulkan works, given an ffmpeg built `--enable-vulkan --enable-libplacebo`
-  (RADV enumerates `RADV GFX1201` fine), but benchmarked **slower than OpenCL** here. It is
-  also a different tone-mapping algorithm, so it will not match `tonemap_cuda` output if you
-  run a mixed AMD/NVIDIA fleet and expect one tone curve across it.
-
 ## ffmpeg is deliberately untouched
 
 This image adds a **driver stack**, not an encoder. The base image's bundled ffmpeg is left
 exactly as it is.
 
 That matters because a Mesa new enough for gfx1201 does nothing on its own if ffmpeg lacks the
-AMD encoders — `hevc_vaapi`, `av1_vaapi`, and `tonemap_opencl` all have to be compiled in. If
-yours is not, supply one by bind-mounting it and pointing Tdarr's `ffmpegPath` at it, which
-keeps the encoder and the driver as separately upgradable pieces. A jellyfin-ffmpeg build
-configured `--enable-vaapi --enable-opencl --enable-vulkan` is one way to get there.
+AMD encoders — `hevc_vaapi` and `av1_vaapi` both have to be compiled in. If yours is not,
+supply one by bind-mounting it and pointing Tdarr's `ffmpegPath` at it, which keeps the
+encoder and the driver as separately upgradable pieces. A jellyfin-ffmpeg build configured
+`--enable-vaapi` is one way to get there.
 
 ## Channels
 
@@ -159,18 +146,16 @@ clean-looking image with a broken driver.
 - **An apt version pin that matches nothing is a no-op, not an error.** Without the build-time
   assertion the image would build clean, ship 25.2.8, and pass every runtime check against the
   wrong driver.
-- **The OpenCL ICD filename carries the ROCm build** (`amdocl64_70204_93.icd`), so the check
-  globs rather than naming it.
 
 ## Verifying a built image
 
-Needs `--device /dev/dri --device /dev/kfd`. `vainfo` and `clinfo` are both already present.
+Needs `--device /dev/dri`. `vainfo` is already present.
 
 ```bash
-podman run --rm --device /dev/dri --device /dev/kfd --security-opt label=disable \
+podman run --rm --device /dev/dri --security-opt label=disable \
   ghcr.io/andyattebery/tdarr-node-mesa-fresh:kisak \
-  bash -c 'cat /etc/tdarr-node-mesa-fresh.build; vainfo --display drm --device /dev/dri/renderD128; clinfo -l'
+  bash -c 'cat /etc/tdarr-node-mesa-fresh.build; vainfo --display drm --device /dev/dri/renderD128'
 ```
 
-Expected: the Mesa version matching what was built, `VAProfileHEVCMain10` with
-`VAEntrypointEncSlice`, and an OpenCL device reporting **gfx1201**.
+Expected: the Mesa version matching what was built, and `VAProfileHEVCMain10` with
+`VAEntrypointEncSlice`.
