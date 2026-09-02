@@ -1,12 +1,14 @@
 name: 'Build and push'
 
-# Scheduled, because channels.txt is no longer hand-maintained: refresh-channels.py writes
-# whatever each PPA currently has installable on noble/amd64, and the run then builds only the
-# channels that moved. Most days that is nothing, and a run that builds nothing is a success.
+# Scheduled, because neither pin is hand-maintained any more. refresh-channels.py writes
+# whatever each PPA currently has installable on noble/amd64, and refresh-base.py writes
+# whatever the upstream :latest tag resolves to. The run then builds only what moved -- the
+# channels whose Mesa changed, or ALL channels if the base changed, since a new base changes
+# every image. Most days nothing moves, and a run that builds nothing is a success.
 #
 # The refresh and the build deliberately share one run. A push made with GITHUB_TOKEN does not
-# trigger `on: push`, so a bot commit to channels.txt cannot kick off a build of its own -- the
-# run that writes the pin has to be the run that builds it.
+# trigger `on: push`, so a bot commit to channels.txt or base.txt cannot kick off a build of
+# its own -- the run that writes the pins has to be the run that builds them.
 on:
   schedule:
     - cron: '17 6 * * *'
@@ -15,8 +17,11 @@ on:
     paths:
       - 'Containerfile'
       - 'channels.txt'
+      - 'base.txt'
       - 'resolve-channel.sh'
+      - 'resolve-base.sh'
       - 'refresh-channels.py'
+      - 'refresh-base.py'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
@@ -29,7 +34,7 @@ on:
           - mesarc
         default: all
       refresh:
-        description: 'Refresh pins from the PPAs first, then build only what moved (ignores the channel above)'
+        description: 'Refresh the PPA pins and the base image first, then build only what moved (ignores the channel above)'
         type: boolean
         default: false
 
@@ -38,7 +43,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  # write, not read: the refresh commits channels.txt back to the branch.
+  # write, not read: the refresh commits channels.txt and base.txt back to the branch.
   contents: write
   packages: write
 
@@ -48,7 +53,7 @@ env:
 jobs:
   # Decide what to build, and -- in refresh mode -- move the pins first.
   resolve:
-    name: 'Resolve channels'
+    name: 'Resolve what to build'
     runs-on: ubuntu-latest
     outputs:
       channels: ${{ steps.list.outputs.channels }}
@@ -59,23 +64,38 @@ jobs:
       # Refresh mode is `schedule` or a dispatch with refresh=true. The dispatch exists so this
       # path can be rehearsed without waiting for cron, so it must behave exactly as cron does --
       # which is why it ignores mesa_channel and builds only what moved.
-      - name: 'Refresh pins from the PPAs'
+      - name: 'Refresh pins from the PPAs and upstream'
         id: refresh
         if: github.event_name == 'schedule' || inputs.refresh
         env:
           BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          changed="$(python3 refresh-channels.py --write)"
-          echo "changed=${changed}" >> "$GITHUB_OUTPUT"
-          if [ "${changed}" = '[]' ]; then
-            echo "No channel moved; nothing to commit."
+          # Both, always, and in one commit -- they are two halves of the same daily question
+          # ("is anything we build on newer than what we pinned?") and splitting them would
+          # put two commits on the branch for one run's worth of change.
+          changed="$(python3 refresh-channels.py --write)"    # JSON array, e.g. ["kisak"]
+          base_new="$(python3 refresh-base.py --write)"       # "2.87.01", or empty
+          echo "changed=${changed}"   >> "$GITHUB_OUTPUT"
+          echo "base_new=${base_new}" >> "$GITHUB_OUTPUT"
+
+          msg=''
+          if [ "${changed}" != '[]' ]; then
+            msg="channels: follow PPAs for $(echo "${changed}" | tr -d '[]\"' | tr ',' ' ')"
+          fi
+          if [ -n "${base_new}" ] && [ -n "${msg}" ]; then
+            msg="${msg}; base -> ${base_new}"
+          elif [ -n "${base_new}" ]; then
+            msg="base: follow upstream -> ${base_new}"
+          fi
+          if [ -z "${msg}" ]; then
+            echo "Nothing moved; nothing to commit."
             exit 0
           fi
           git config user.name  'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add channels.txt
-          git commit -m "channels: follow PPAs for $(echo "${changed}" | tr -d '[]"' | tr ',' ' ')"
+          git add channels.txt base.txt
+          git commit -m "${msg}"
           # Push BEFORE anything is built or published, and to an explicit refspec because
           # actions/checkout leaves a detached HEAD. If a human pushed while this run was in
           # flight the push is rejected and the run fails having shipped nothing; the next run
@@ -88,10 +108,17 @@ jobs:
           WANT: ${{ inputs.mesa_channel }}
           REFRESHED: ${{ github.event_name == 'schedule' || inputs.refresh }}
           CHANGED: ${{ steps.refresh.outputs.changed }}
+          BASE_NEW: ${{ steps.refresh.outputs.base_new }}
         run: |
           set -euo pipefail
-          if [ "${REFRESHED}" = true ]; then
+          if [ "${REFRESHED}" = true ] && [ -n "${BASE_NEW}" ]; then
+            # A new base is under every channel, so every channel is stale -- including one
+            # held in channels.txt, because `hold` freezes a Mesa version, not the image.
+            channels=$(./resolve-channel.sh --list)
+            echo "Base moved to ${BASE_NEW}: rebuilding every channel."
+          elif [ "${REFRESHED}" = true ]; then
             channels="${CHANGED:-[]}"
+            echo "Base unchanged; building only the channels whose Mesa moved."
           elif [ -z "${WANT}" ] || [ "${WANT}" = all ]; then
             channels=$(./resolve-channel.sh --list)
           else
@@ -125,9 +152,9 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.sha }}
 
-      # Everything about the Mesa source is derived here from channels.txt, so a version
-      # string exists in exactly one place in this repo. The step also decides the tags,
-      # which means a tag can never disagree with what was installed.
+      # One step, both files: resolve-channel.sh reads channels.txt and calls resolve-base.sh
+      # for base.txt, so each version string exists in exactly one place in this repo. It also
+      # decides the tags, which is why a tag can never disagree with what was built.
       - name: 'Resolve ${{ matrix.channel }}'
         id: tags
         run: |
@@ -152,6 +179,8 @@ jobs:
           file: ./Containerfile
           push: true
           build-args: |
+            BASE_IMAGE=${{ steps.tags.outputs.base_image }}
+            TDARR_VERSION=${{ steps.tags.outputs.tdarr_version }}
             MESA_PPA=${{ steps.tags.outputs.ppa }}
             MESA_VERSION=${{ steps.tags.outputs.version }}
           tags: ${{ steps.tags.outputs.list }}
@@ -165,6 +194,12 @@ jobs:
       - name: 'Report what shipped'
         run: |
           set -euo pipefail
+          held=''
+          if [ '${{ steps.tags.outputs.base_held }}' = true ]; then
+            # Worth saying out loud: a held base means this image is deliberately NOT on
+            # upstream's newest, and that should not look like an ordinary build.
+            held=' **(held)**'
+          fi
           {
             echo "### ${{ matrix.channel }}"
             echo
@@ -174,9 +209,12 @@ jobs:
             echo
             echo "- MESA_PPA: \`${{ steps.tags.outputs.ppa }}\`"
             echo "- MESA_VERSION: \`${{ steps.tags.outputs.version }}\`"
+            echo "- Base: \`${{ steps.tags.outputs.base_image }}\`"
+            echo "- Tdarr: \`${{ steps.tags.outputs.tdarr_version }}\`${held}"
             echo "- Tags: \`${{ steps.tags.outputs.list }}\`"
             echo
-            echo 'Mesa actually installed, read back out of the image:'
+            echo 'Build stamp. The Mesa version is read back from dpkg inside the image;'
+            echo 'the rest are the inputs it was built with:'
             echo
             echo '```'
             docker run --rm --entrypoint cat \

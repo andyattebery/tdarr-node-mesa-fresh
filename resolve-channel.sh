@@ -3,7 +3,8 @@
 #
 #   ./resolve-channel.sh --list        JSON array of every channel, for the build matrix
 #   ./resolve-channel.sh <channel>     `key=value` lines for $GITHUB_OUTPUT:
-#                                      channel, ppa, version, list
+#                                      channel, ppa, version,
+#                                      base_image, tdarr_version, base_held, list
 #
 # Exits non-zero with a reason on stderr rather than emitting anything questionable.
 set -euo pipefail
@@ -63,8 +64,28 @@ esac
 # '~' and '+'.
 safe_version="$(printf '%s' "$version" | tr '~+' '--')"
 
+# The exact tag names the base as well as the Mesa, so the tag list needs the upstream
+# version. Read it through resolve-base.sh rather than parsing base.txt again here: one
+# parser means one set of rules, and the reference the build uses cannot drift from the
+# version the tag claims.
+base_out="$("$here/resolve-base.sh")" || die "resolve-base.sh failed"
+base_image="$(echo "$base_out" | sed -n 's/^base_image=//p')"
+tdarr_version="$(echo "$base_out" | sed -n 's/^tdarr_version=//p')"
+base_held="$(echo "$base_out" | sed -n 's/^base_held=//p')"
+[ -n "$base_image" ] && [ -n "$tdarr_version" ] \
+  || die "resolve-base.sh emitted no base_image/tdarr_version"
+
 # No :latest and no floating cross-channel tag: every tag names the channel or the build.
-list="${image}:${channel},${image}:${channel}-${safe_version},${image}:${GITHUB_SHA:-local}"
+# Three tags, as before -- the middle one now identifies both moving inputs, so an exact tag
+# pins the driver AND the Tdarr it was built on.
+#
+# Deliberately absent, so a later round does not re-add them:
+#   :<channel>-tdarr-<version>  -- pinning upstream while floating Mesa serves nobody. You
+#                                  want newest-of-both (:<channel>) or one exact build.
+#   :<channel>-tdarr-latest     -- :<channel> already means that. The two would differ only
+#                                  while base.txt is held, which is not worth a tag that is
+#                                  a duplicate the rest of the time.
+list="${image}:${channel},${image}:${channel}-${safe_version}-tdarr-${tdarr_version},${image}:${GITHUB_SHA:-local}"
 
 for t in $(echo "$list" | tr ',' ' '); do
   tag="${t##*:}"
@@ -74,4 +95,7 @@ done
 echo "channel=${channel}"
 echo "ppa=${ppa}"
 echo "version=${version}"
+echo "base_image=${base_image}"
+echo "tdarr_version=${tdarr_version}"
+echo "base_held=${base_held}"
 echo "list=${list}"

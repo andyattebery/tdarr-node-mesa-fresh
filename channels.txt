@@ -1,4 +1,5 @@
-# Mesa channels. THIS FILE IS THE ONLY PLACE A VERSION IS PINNED.
+# Mesa channels. THIS FILE IS THE ONLY PLACE A MESA VERSION IS PINNED.
+# (The upstream base image is pinned separately, in base.txt.)
 #
 # Fields, separated by any run of whitespace. The fourth is optional:
 #

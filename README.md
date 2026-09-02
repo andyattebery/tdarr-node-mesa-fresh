@@ -38,10 +38,38 @@ supply one by bind-mounting it and pointing Tdarr's `ffmpegPath` at it, which ke
 encoder and the driver as separately upgradable pieces. A jellyfin-ffmpeg build configured
 `--enable-vaapi` is one way to get there.
 
+## The base image
+
+The base is pinned in [`base.txt`](base.txt), as `image  version  digest`. Nothing else in
+this repo names it.
+
+The daily run resolves `ghcr.io/haveagitgat/tdarr_node:latest`, and if that digest differs
+from the pin, works out what upstream *calls* it — reading
+`org.opencontainers.image.version` off the image's own amd64 config, then looking that name
+up as a tag and requiring it to resolve to the same digest. A label alone would be a claim; a
+label confirmed by the tag is a fact, and it is the tag name that ends up in the images this
+repo publishes. If either half surprises it, the run goes red having shipped nothing.
+
+**A base change rebuilds every channel**, not just the ones whose Mesa moved — a new base is
+underneath all of them. That includes a channel marked `hold`, because `hold` in
+`channels.txt` freezes a *Mesa version*, not the image; it is rebuilt with its held Mesa on
+the new base. To freeze the base itself, add `hold` to the row in `base.txt`, which is
+independent.
+
+The pin carries a **digest as well as a version tag**, and the digest is the part that does
+the work: a version tag can be re-pushed, so a row frozen at `:2.86.01` could otherwise still
+drift under a deliberate rollback. It also makes "has upstream moved?" a string comparison
+rather than an exercise in ordering `2.86.01` against `2.00.15.1`, `1.99.04`,
+`2.13.01_ffmpeg5` and `dev`.
+
+What the digest does **not** buy is a reproducible build. The Containerfile's `dist-upgrade`
+pulls whatever noble security and `-updates` packages are current, so two builds a month
+apart differ by more than this pin. The image is reproducible only via its output digest.
+
 ## Channels
 
 Which Mesa the image carries is a **channel**, and every channel is defined in one place —
-[`channels.txt`](channels.txt). Nothing else in this repo pins a version.
+[`channels.txt`](channels.txt). Nothing else in this repo pins a Mesa version.
 
 | Channel | What it tracks |
 | --- | --- |
@@ -69,10 +97,11 @@ A push to `main` builds **every** channel in `channels.txt`, as independent matr
 build one on demand, run the workflow and pick it from `mesa_channel` (`all` is the default).
 
 A **daily scheduled run** does something different. It first runs `refresh-channels.py`, which
-asks each PPA what it currently has installable on noble/amd64, writes that into `channels.txt`
-and commits it — then builds only the channels whose version actually moved. Most days nothing
-moves, and the run finishes green having built nothing. That is the normal outcome, not a
-misfire.
+asks each PPA what it currently has installable on noble/amd64, and `refresh-base.py`, which
+asks the registry what upstream's `:latest` resolves to. Both write their pins and land in one
+commit — then the run builds only what moved: the channels whose Mesa changed, or *every*
+channel if the base changed. Most days nothing moves, and the run finishes green having built
+nothing. That is the normal outcome, not a misfire.
 
 The refresh and the build share one run because a push made with `GITHUB_TOKEN` does not trigger
 `on: push`: a bot commit cannot start a build of its own, so the run that writes the pin has to
@@ -85,22 +114,34 @@ publish a build that trips one of the Containerfile's gates, and when that happe
 channel must still build and publish. Expect a run with one red leg and one green — that is the
 design working, not a broken repo.
 
-Locally — no process substitution, so this works in any shell:
+Locally — `resolve-channel.sh` emits shell assignments, so `eval` gets you all four build
+args without repeating a version anywhere:
 
 ```sh
-set -- $(grep '^kisak' channels.txt)
-docker build --build-arg MESA_PPA="$2" --build-arg MESA_VERSION="$3" -t tdarr-node-mesa-fresh .
+eval "$(./resolve-channel.sh kisak)"
+docker build \
+  --build-arg BASE_IMAGE="$base_image" --build-arg TDARR_VERSION="$tdarr_version" \
+  --build-arg MESA_PPA="$ppa" --build-arg MESA_VERSION="$version" \
+  -t tdarr-node-mesa-fresh .
 ```
 
-`./resolve-channel.sh <channel>` prints the same values, and is what the workflow uses.
+That one call reads both `channels.txt` and `base.txt`, which is also what the workflow does —
+so a local build and a published one are built from the same values, resolved the same way.
 
-There are no `ARG` defaults: a build with no channel fails rather than silently picking one.
+There are no `ARG` defaults: a build with no channel fails rather than silently picking one,
+and a build with no base fails in the `FROM` before anything runs.
 
 ### Tags
 
-    :<channel>                          moving pointer for that channel
-    :<channel>-<version>                the exact build ('~' and '+' become '-')
+    :<channel>                              moving pointer for that channel
+    :<channel>-<mesa>-tdarr-<version>       the exact build: both moving inputs, named
+                                            ('~' and '+' become '-')
     :<git sha>
+
+The exact tag carries the Tdarr version as well as the Mesa one because both move
+independently, and an image is only fully identified by the pair. For example:
+
+    :kisak-26.1.7-kisak1-n-tdarr-2.86.01
 
 Run `./resolve-channel.sh <channel>` to see the exact tags a build would push.
 
@@ -124,6 +165,9 @@ channel is being kept on an older release while a newer one is already in the PP
 
 The refresh skips a held row entirely and reports it as held. `hold` is the only value that
 field accepts; anything else fails the build rather than quietly reading as "not held".
+
+`base.txt` takes the same fourth field, independently: holding a channel does not hold the
+base, and holding the base does not hold any channel.
 
 ## Packaging traps this image works around
 

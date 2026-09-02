@@ -1,0 +1,37 @@
+# Upstream base image. THIS FILE IS THE ONLY PLACE THE BASE IS PINNED.
+#
+# Fields, separated by any run of whitespace. The fourth is optional:
+#
+#   image   version   digest   [hold]
+#
+# Exactly one row. The Containerfile takes this as BASE_IMAGE, assembled by
+# resolve-base.sh into `image:version@digest` -- the digest is what actually
+# resolves, and the tag rides along so build logs and `docker history` read as
+# a version rather than a hash.
+#
+# The digest is the load-bearing half, for two reasons:
+#
+#   1. `hold` below means nothing without it. A version tag can be re-pushed,
+#      so a row frozen at :2.86.01 could still drift under you.
+#   2. Change detection would otherwise need to order version *names*, across
+#      2.86.01 / 2.00.15.1 / 1.99.04 / 2.13.01_ffmpeg5 / dev / latest_ffmpeg5.
+#      refresh-channels.py refused to write a version comparator for good
+#      reason; this file does not need one either. Resolving :latest to a
+#      digest answers "has it moved" by string equality.
+#
+# What this does NOT buy: reproducibility. The Containerfile's dist-upgrade
+# floats every noble package, so two builds a month apart differ by more than
+# this pin. It pins the one input that is free to pin.
+#
+# This row is maintained by refresh-base.py, which runs daily and writes
+# whatever ghcr.io/haveagitgat/tdarr_node:latest currently resolves to. A hand
+# edit is fine but temporary: the next refresh overwrites it.
+#
+# To freeze the base, add `hold` as a fourth field. The refresh then leaves the
+# row alone until it is removed -- a rollback, or sitting out a bad upstream
+# release. `hold` is the only value the field may take; anything else fails the
+# build rather than reading as "not held". A base freeze does not freeze Mesa:
+# channels.txt has its own, independent `hold`.
+
+# image                          version  digest
+ghcr.io/haveagitgat/tdarr_node   2.86.01  sha256:7542459ac5ed5cd299600530e9625b9d590629d5dc391c0016773f5d6aa3fe75

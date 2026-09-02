@@ -1,24 +1,54 @@
 # Tdarr node for RDNA 4 (gfx1201, VCN 5.0): the stock image, plus a Mesa above the VCN5 floor.
 #
-# Base pinned by digest, not by tag: `latest` moves, and a transcode node's driver stack
-# should not change under it unannounced.
-# Digest below is ghcr.io/haveagitgat/tdarr_node:latest as of 2026-08-17.
-FROM ghcr.io/haveagitgat/tdarr_node@sha256:7542459ac5ed5cd299600530e9625b9d590629d5dc391c0016773f5d6aa3fe75
+# The base arrives as repo:version@digest. The digest is what resolves; the tag rides along
+# so build logs, `docker history` and the base.name label read as a version, not a hash.
+#
+# Pinned by digest and not by the version tag alone, because a tag can be re-pushed -- which
+# would make `hold` in base.txt mean nothing. Note what this does NOT buy: the dist-upgrade
+# below floats every noble package, so this is not a reproducible build. It pins the one
+# input that is free to pin.
+#
+# The value lives in base.txt and nowhere else. refresh-base.py moves it daily, the same way
+# channels.txt follows the PPAs.
+#
+# No default, for the same reason MESA_* has none -- but note the failure mode differs. An
+# empty value fails while resolving the FROM itself -- "base name (${BASE_IMAGE}) should not
+# be blank" -- rather than with the readable FATAL below, because nothing runs before FROM.
+#
+# BuildKit warns InvalidDefaultArgInFrom on every build because of this. That is the warning
+# firing on the intended design, not a defect: giving it a default to quiet the lint is
+# exactly the silent-wrong-base failure the empty value exists to prevent. Leave it.
+#
+#   ./resolve-base.sh              -- prints base_image and tdarr_version
+ARG BASE_IMAGE=
+FROM ${BASE_IMAGE}
 
 # --- Mesa -------------------------------------------------------------------------------
 # Noble ships 25.2.8, which is below the 26.1.2 floor: it misses the gfx1201 VCN unified
 # ring-timeout fix and `radeonsi/vcn: Remove encode op_preset overrides`, the latter meaning
 # the encoder silently ignores -compression_level on VCN5. See the README for the full list.
 #
-# NO DEFAULTS, on purpose. The versions live in channels.txt and nowhere else; a default
+# NO DEFAULTS, on purpose. The Mesa versions live in channels.txt and nowhere else; a default
 # here would be a second source of truth that can drift from it, and a bare `docker build .`
 # would quietly produce an image nobody chose. Both values are required, and the guard in
 # the RUN below fails the build if either is missing.
 #
 #   ./resolve-channel.sh kisak     -- prints the pair for a channel
-#   README.md                      -- the two-line local build
+#   README.md                      -- the local build
 ARG MESA_PPA=
 ARG MESA_VERSION=
+
+# --- Upstream ---------------------------------------------------------------------------
+# Which Tdarr release BASE_IMAGE is. Echoed into the stamp and used in the exact image tag.
+# Unlike MESA_VERSION this cannot be read back out of the image at build time -- a label is
+# not visible from inside a RUN -- so resolve-base.sh is what guarantees it matches the
+# digest above, by cross-checking the two against the registry before the pin is written.
+ARG TDARR_VERSION=
+
+# BASE_IMAGE is declared above FROM, which puts it in the global scope -- NOT in this build
+# stage. Without this bare re-declaration ${BASE_IMAGE} below expands to the empty string and
+# both the stamp and the base.name label ship blank, with nothing failing to say so.
+ARG BASE_IMAGE
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -29,6 +59,8 @@ RUN set -eux; \
       || { echo "FATAL: MESA_PPA is unset. Pass --build-arg MESA_PPA=... (see channels.txt)"; exit 1; }; \
     test -n "${MESA_VERSION}" \
       || { echo "FATAL: MESA_VERSION is unset. Pass --build-arg MESA_VERSION=... (see channels.txt)"; exit 1; }; \
+    test -n "${TDARR_VERSION}" \
+      || { echo "FATAL: TDARR_VERSION is unset. Pass --build-arg TDARR_VERSION=... (see base.txt)"; exit 1; }; \
     export DEBIAN_FRONTEND=noninteractive; \
     apt-get update; \
     # All three are already in the base image; listed so this does not silently depend on
@@ -87,12 +119,16 @@ RUN set -eux; \
     test -e /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so \
       || { echo "FATAL: radeonsi_drv_video.so missing or dangling"; exit 1; }
 
-# Stamped from the installed package, not echoed back from the ARG, so the label describes
-# what is actually in the image.
-RUN printf 'MESA_VERSION=%s\nMESA_PPA=%s\n' \
+# The Mesa version is stamped from the installed package, not echoed back from the ARG, so
+# it describes what is actually in the image. The other three cannot be: MESA_PPA is not
+# recorded anywhere queryable after the build, and the base's identity is a manifest property
+# the container cannot see. Those are echoed, and this comment is here so nobody reads the
+# whole file as read-back evidence.
+RUN printf 'MESA_VERSION=%s\nMESA_PPA=%s\nTDARR_VERSION=%s\nBASE_IMAGE=%s\n' \
       "$(dpkg-query -W -f='${Version}' mesa-libgallium)" "${MESA_PPA}" \
+      "${TDARR_VERSION}" "${BASE_IMAGE}" \
       > /etc/tdarr-node-mesa-fresh.build
 
 LABEL org.opencontainers.image.source="https://github.com/andyattebery/tdarr-node-mesa-fresh"
 LABEL org.opencontainers.image.description="Tdarr node with fresh Mesa (VA-API on gfx1201)"
-LABEL org.opencontainers.image.base.name="ghcr.io/haveagitgat/tdarr_node"
+LABEL org.opencontainers.image.base.name="${BASE_IMAGE}"
