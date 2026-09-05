@@ -185,6 +185,27 @@ field accepts; anything else fails the build rather than quietly reading as "not
 `base.txt` takes the same fourth field, independently: holding a channel does not hold the
 base, and holding the base does not hold any channel.
 
+**`hold` is a weaker rollback than it looks, and the limit is not this repo's fault.** Both
+PPAs publish exactly one version of `mesa-libgallium` at a time — Launchpad drops superseded
+publications from the index — so a held pin stops being *installable* as soon as the PPA moves
+on:
+
+    kisak/kisak-mesa   26.2.2~kisak1~n
+    ernstp/mesarc      26.2.2+git2609021820.0ae52750c0c~n~mesarc0
+
+While nothing triggers a rebuild that is harmless: the held channel's image is already
+published, so the daily reconcile leaves it alone. But the next time the **base image** moves,
+the exact tag changes, the channel comes back pending, the build runs, and it fails on a
+version apt can no longer fetch. A held channel therefore becomes a permanent red leg after
+the next upstream Tdarr release, until the hold is removed.
+
+The same mechanism explains a failure you will see occasionally on **pushes**: a push builds
+from the committed pin without refreshing first, so if the PPA has moved since the last daily
+run, the pin matches nothing, apt installs the version it does have, and the build-time
+assertion catches the mismatch. That is the assertion working. The next daily run refreshes
+the pin and the channel builds. mesarc hits this more often than kisak only because it
+republishes more often — neither is immune.
+
 ## Tests
 
 ```sh

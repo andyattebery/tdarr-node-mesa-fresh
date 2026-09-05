@@ -31,4 +31,4 @@
 
 # channel  ppa                    version
 kisak      ppa:kisak/kisak-mesa   26.2.2~kisak1~n
-mesarc     ppa:ernstp/mesarc      26.2.1+git2608201115.88947685514~n~mesarc0
+mesarc     ppa:ernstp/mesarc      26.2.2+git2609021820.0ae52750c0c~n~mesarc0
