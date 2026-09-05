@@ -1,0 +1,2 @@
+kisak      ppa:kisak/kisak-mesa   26.2.2~kisak1~n
+kisak      ppa:other/other        26.2.2~kisak1~n

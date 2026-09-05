@@ -1,0 +1,1 @@
+ghcr.io/haveagitgat/tdarr_node   2.86.01  sha256:short

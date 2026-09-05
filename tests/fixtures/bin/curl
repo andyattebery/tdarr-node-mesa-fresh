@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# A stand-in for curl, put on PATH ahead of the real one so pending-channels.sh never touches
+# a registry.
+#
+# It must be an executable on PATH rather than an exported shell function: `export -f curl`
+# was tried and, under a non-bash caller, silently did nothing -- the script called the real
+# curl and the test "passed" by talking to the live registry. A test that passes by accident
+# against production is worse than no test at all.
+#
+# Behaviour is chosen by $CURL_STUB. The URL is always the last argument, which is how
+# pending-channels.sh invokes it.
+#
+# Manifest replies imitate `curl --head --write-out '\n%{http_code}'`: headers, then a blank
+# line, then the status on its own last line. Header lines carry a trailing \r, as a real
+# server sends, so the caller's `tr -d '\r'` is genuinely exercised.
+set -uo pipefail
+
+url="${@: -1}"
+DIGEST_A="sha256:aaaa000000000000000000000000000000000000000000000000000000000000"
+DIGEST_B="sha256:bbbb000000000000000000000000000000000000000000000000000000000000"
+
+token_ok()   { printf '{"token":"stub-token"}'; }
+manifest()   { printf 'content-type: application/vnd.oci.image.index.v1+json\r\ndocker-content-digest: %s\r\n\n%s' "$1" "${2:-200}"; }
+missing()    { printf 'content-type: application/json\r\n\n404'; }
+
+case "$url" in
+  */token*)
+    case "${CURL_STUB}" in
+      token-transport-fail) exit 7 ;;          # curl's own "couldn't connect"
+      token-no-token)       printf '{"errors":[{"code":"DENIED"}]}' ;;
+      *)                    token_ok ;;
+    esac
+    ;;
+
+  *manifests/*)
+    ref="${url##*/manifests/}"
+    case "${CURL_STUB}" in
+      manifest-transport-fail) exit 7 ;;
+      manifest-500)            printf 'content-type: text/html\r\n\n500' ;;
+      manifest-200-no-digest)  printf 'content-type: application/json\r\n\n200' ;;
+
+      # Nothing published at all: every channel is pending.
+      all-absent) missing ;;
+
+      # Everything published and the moving tag agrees: nothing pending.
+      all-present) manifest "$DIGEST_A" ;;
+
+      # Exact tag present, but :<channel> points somewhere else -- the rollback-under-hold
+      # case. The moving tag is a bare channel name; the exact tag contains "-tdarr-".
+      moving-drifted)
+        case "$ref" in
+          *-tdarr-*) manifest "$DIGEST_A" ;;
+          *)         manifest "$DIGEST_B" ;;
+        esac
+        ;;
+
+      # Exact tag present, but :<channel> does not exist yet.
+      moving-absent)
+        case "$ref" in
+          *-tdarr-*) manifest "$DIGEST_A" ;;
+          *)         missing ;;
+        esac
+        ;;
+
+      # One channel pending, one not -- proves the array is filtered, not all-or-nothing.
+      mixed)
+        case "$ref" in
+          kisak-*-tdarr-*) missing ;;
+          *)               manifest "$DIGEST_A" ;;
+        esac
+        ;;
+
+      *) echo "curl stub: unknown CURL_STUB '${CURL_STUB}'" >&2; exit 99 ;;
+    esac
+    ;;
+
+  *)
+    echo "curl stub: unexpected url '$url'" >&2
+    exit 98
+    ;;
+esac

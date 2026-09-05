@@ -185,6 +185,34 @@ field accepts; anything else fails the build rather than quietly reading as "not
 `base.txt` takes the same fourth field, independently: holding a channel does not hold the
 base, and holding the base does not hold any channel.
 
+## Tests
+
+```sh
+./tests/run.sh
+```
+
+No network, no Docker, no dependencies beyond `bash` and `python3` — the scripts under test are
+stdlib-only and the tests are too. Runs in about a second. CI runs it as a gate: every other job
+depends on it, so a failure stops the run *before* it commits a pin, which is the property that
+matters given this repo once committed a version it never published.
+
+Registry and Launchpad calls are stubbed. The `curl` stub is an executable on `PATH`
+(`tests/fixtures/bin/curl`) rather than a shell function, and `run.sh` refuses to start unless
+that stub actually shadows the real `curl` — a stub that silently fails to apply produces tests
+that pass by talking to production, which is worse than having none.
+
+**What it does not cover**, so a green run is not mistaken for more than it is:
+
+- **The `Containerfile`** — its `add-apt-repository` retry loop, its three `test -n` guards, the
+  separate `BASE_IMAGE`-empty failure at `FROM`, and the `mesa-libgallium` /
+  `radeonsi_drv_video.so` gates. All of those need a real image build.
+- **The workflow's own shell** — the `List channels` branch logic lives inline in
+  `build.yaml`.
+
+Three guards in `pending-channels.sh` and `resolve-channel.sh` are unreachable by design (a
+preceding `set -e` assignment kills the script first) and are deliberately untested rather than
+silently omitted; `plans/add-tests.md` names them.
+
 ## Packaging traps this image works around
 
 Each of these was found by reading the archive indexes, and each would otherwise produce a

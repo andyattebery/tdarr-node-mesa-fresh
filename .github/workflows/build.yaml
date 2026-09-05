@@ -28,6 +28,7 @@ on:
       - 'refresh-channels.py'
       - 'refresh-base.py'
       - 'pending-channels.sh'
+      - 'tests/**'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
@@ -57,9 +58,21 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Everything else needs this. A test failure must stop the run BEFORE the refresh commits a
+  # pin -- "committed a version we never published" is the exact bug this repo already shipped
+  # once, and a gate that only protected the build would let it happen again.
+  test:
+    name: 'Tests'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No network, no Docker, no dependencies -- see tests/run.sh for what it does not cover.
+      - run: ./tests/run.sh
+
   # Decide what to build, and -- in refresh mode -- move the pins first.
   resolve:
     name: 'Resolve what to build'
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       channels: ${{ steps.list.outputs.channels }}
