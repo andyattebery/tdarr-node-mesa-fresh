@@ -2,9 +2,14 @@ name: 'Build and push'
 
 # Scheduled, because neither pin is hand-maintained any more. refresh-channels.py writes
 # whatever each PPA currently has installable on noble/amd64, and refresh-base.py writes
-# whatever the upstream :latest tag resolves to. The run then builds only what moved -- the
-# channels whose Mesa changed, or ALL channels if the base changed, since a new base changes
-# every image. Most days nothing moves, and a run that builds nothing is a success.
+# whatever the upstream :latest tag resolves to.
+#
+# The run then builds whatever the REGISTRY is missing, which is not the same thing as what
+# moved during this run. pending-channels.sh -- see its header -- compares each channel's
+# expected image tag against what is actually published. That makes the run idempotent: run
+# 33961302606 committed a pin and then died before publishing it, and under the old
+# what-moved logic no later run would ever have retried it. Most days nothing is missing, and a
+# run that builds nothing is a success.
 #
 # The refresh and the build deliberately share one run. A push made with GITHUB_TOKEN does not
 # trigger `on: push`, so a bot commit to channels.txt or base.txt cannot kick off a build of
@@ -22,6 +27,7 @@ on:
       - 'resolve-base.sh'
       - 'refresh-channels.py'
       - 'refresh-base.py'
+      - 'pending-channels.sh'
       - '.github/workflows/build.yaml'
   workflow_dispatch:
     inputs:
@@ -74,10 +80,12 @@ jobs:
           # Both, always, and in one commit -- they are two halves of the same daily question
           # ("is anything we build on newer than what we pinned?") and splitting them would
           # put two commits on the branch for one run's worth of change.
+          #
+          # Both values are used only to compose the commit message below. They deliberately do
+          # NOT decide what gets built any more -- that question is answered by asking the
+          # registry what is missing, in the next step.
           changed="$(python3 refresh-channels.py --write)"    # JSON array, e.g. ["kisak"]
           base_new="$(python3 refresh-base.py --write)"       # "2.87.01", or empty
-          echo "changed=${changed}"   >> "$GITHUB_OUTPUT"
-          echo "base_new=${base_new}" >> "$GITHUB_OUTPUT"
 
           msg=''
           if [ "${changed}" != '[]' ]; then
@@ -107,19 +115,21 @@ jobs:
         env:
           WANT: ${{ inputs.mesa_channel }}
           REFRESHED: ${{ github.event_name == 'schedule' || inputs.refresh }}
-          CHANGED: ${{ steps.refresh.outputs.changed }}
-          BASE_NEW: ${{ steps.refresh.outputs.base_new }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ "${REFRESHED}" = true ] && [ -n "${BASE_NEW}" ]; then
-            # A new base is under every channel, so every channel is stale -- including one
-            # held in channels.txt, because `hold` freezes a Mesa version, not the image.
-            channels=$(./resolve-channel.sh --list)
-            echo "Base moved to ${BASE_NEW}: rebuilding every channel."
-          elif [ "${REFRESHED}" = true ]; then
-            channels="${CHANGED:-[]}"
-            echo "Base unchanged; building only the channels whose Mesa moved."
+          if [ "${REFRESHED}" = true ]; then
+            # Reconcile against the registry rather than trusting what this run happened to
+            # change. That is what makes a failed build self-healing: its tag is still missing
+            # tomorrow, so tomorrow rebuilds it. It also covers a base bump for free -- a new
+            # base changes every channel's exact tag, so every channel comes back pending -- and
+            # covers a channel held in channels.txt, since `hold` freezes a Mesa version, not
+            # the image.
+            channels=$(./pending-channels.sh)
           elif [ -z "${WANT}" ] || [ "${WANT}" = all ]; then
+            # A push is NOT reconciled. Editing the Containerfile changes no tag, so
+            # reconciliation would decide there was nothing to do -- but the whole point of that
+            # push is to produce a new image. Push means build everything.
             channels=$(./resolve-channel.sh --list)
           else
             # Validate the name against the file rather than trusting the dropdown, which is a

@@ -31,6 +31,7 @@ assumption ever stops holding, the count assertion below fails loudly rather tha
 import argparse
 import json
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,12 @@ LP = "https://api.launchpad.net/1.0"
 SERIES = f"{LP}/ubuntu/noble/amd64"
 PROBE = "mesa-libgallium"
 TIMEOUT = 30
+
+# Launchpad's API is not reliably up. On 2026-09-01 this exact call returned HTTP 503 and killed
+# the nightly run; on 2026-09-05 the same API returned 504 to add-apt-repository inside the
+# build. Retrying is not defensive habit here, it is a response to two outages in five days.
+RETRIES = 5
+BACKOFF = 5  # seconds, multiplied by the attempt number
 
 # The only value field 4 may take. A closed set, like the channel names themselves: a typo'd
 # freeze marker must not silently read as "not frozen" and let the bot overwrite a deliberate pin.
@@ -63,6 +70,26 @@ def api_path(ppa):
     return f"{LP}/~{owner}/+archive/ubuntu/{name}"
 
 
+def get_json(url, what):
+    """GET url, retrying transport errors and 5xx. A 4xx is a real answer and is not retried."""
+    for attempt in range(1, RETRIES + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:
+                return json.load(resp)
+        except urllib.error.HTTPError as exc:
+            # 4xx means the server understood and said no -- retrying turns a fast, clear error
+            # into a slow, confusing one. Only 5xx and transport failures are worth another go.
+            if exc.code < 500 or attempt == RETRIES:
+                die(f"{what} failed: {exc}")
+            reason = f"HTTP {exc.code}"
+        except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
+            if attempt == RETRIES:
+                die(f"{what} failed: {exc}")
+            reason = str(exc)
+        print(f"  {what}: {reason}; retry {attempt}/{RETRIES - 1}", file=sys.stderr)
+        time.sleep(BACKOFF * attempt)
+
+
 def published_version(ppa, channel):
     """The version of PROBE that this PPA currently has installable on noble/amd64."""
     url = api_path(ppa) + "?" + urllib.parse.urlencode({
@@ -72,11 +99,7 @@ def published_version(ppa, channel):
         "status": "Published",
         "distro_arch_series": SERIES,
     })
-    try:
-        with urllib.request.urlopen(url, timeout=TIMEOUT) as resp:
-            entries = json.load(resp).get("entries", [])
-    except (urllib.error.URLError, json.JSONDecodeError, OSError) as exc:
-        die(f"{channel}: querying {ppa} failed: {exc}")
+    entries = get_json(url, f"{channel}: querying {ppa}").get("entries", [])
 
     # Not `entries[0]`. If a PPA ever has two Published binaries for one package on one arch, the
     # premise of this script is wrong and picking either one would be a guess.

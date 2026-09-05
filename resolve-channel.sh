@@ -3,8 +3,8 @@
 #
 #   ./resolve-channel.sh --list        JSON array of every channel, for the build matrix
 #   ./resolve-channel.sh <channel>     `key=value` lines for $GITHUB_OUTPUT:
-#                                      channel, ppa, version,
-#                                      base_image, tdarr_version, base_held, list
+#                                      channel, ppa, version, base_image, tdarr_version,
+#                                      base_held, exact_tag, list
 #
 # Exits non-zero with a reason on stderr rather than emitting anything questionable.
 set -euo pipefail
@@ -85,7 +85,15 @@ base_held="$(echo "$base_out" | sed -n 's/^base_held=//p')"
 #   :<channel>-tdarr-latest     -- :<channel> already means that. The two would differ only
 #                                  while base.txt is held, which is not worth a tag that is
 #                                  a duplicate the rest of the time.
-list="${image}:${channel},${image}:${channel}-${safe_version}-tdarr-${tdarr_version},${image}:${GITHUB_SHA:-local}"
+#
+# exact_tag is emitted in its own right, not just folded into the list, because
+# pending-channels.sh asks the registry whether *this* tag exists. Built once and reused below
+# so the tag that gets pushed and the tag that gets reconciled are the same string by
+# construction -- if they were built by two expressions, the reconciler could look for an image
+# the build never publishes and rebuild for ever.
+exact_tag="${channel}-${safe_version}-tdarr-${tdarr_version}"
+
+list="${image}:${channel},${image}:${exact_tag},${image}:${GITHUB_SHA:-local}"
 
 for t in $(echo "$list" | tr ',' ' '); do
   tag="${t##*:}"
@@ -97,5 +105,6 @@ echo "ppa=${ppa}"
 echo "version=${version}"
 echo "base_image=${base_image}"
 echo "tdarr_version=${tdarr_version}"
+echo "exact_tag=${exact_tag}"
 echo "base_held=${base_held}"
 echo "list=${list}"

@@ -76,7 +76,21 @@ RUN set -eux; \
     # vdpau-driver-all, nothing else.
     apt-get purge -y mesa-vdpau-drivers; \
     \
-    add-apt-repository -y "${MESA_PPA}"; \
+    # Retried, because this is the line that broke the 2026-09-05 nightly: add-apt-repository
+    # asks Launchpad's API for the PPA's signing key, and that call returned HTTP 504. Launchpad
+    # went down twice in the five days before this was written, so a single attempt is not a
+    # reasonable assumption. Re-running is safe -- the sources file is rewritten and adding an
+    # already-added PPA is a no-op.
+    #
+    # `cmd && break` keeps set -e from firing on the intermediate failures; the explicit test
+    # is what turns a genuinely dead PPA into a readable error rather than a silent fall-through
+    # to an apt pin that then matches nothing.
+    for i in 1 2 3 4 5; do \
+      add-apt-repository -y "${MESA_PPA}" && break; \
+      test "$i" != 5 || { echo "FATAL: add-apt-repository failed 5 times for ${MESA_PPA}"; exit 1; }; \
+      echo "add-apt-repository failed (attempt $i/5); retrying in $((i * 15))s"; \
+      sleep $((i * 15)); \
+    done; \
     \
     # Pin by version rather than by archive origin, so MESA_PPA stays a free parameter:
     # only the Mesa packages carry this exact version string, and 1001 permits a downgrade

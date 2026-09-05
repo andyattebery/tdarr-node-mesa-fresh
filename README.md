@@ -99,9 +99,24 @@ build one on demand, run the workflow and pick it from `mesa_channel` (`all` is 
 A **daily scheduled run** does something different. It first runs `refresh-channels.py`, which
 asks each PPA what it currently has installable on noble/amd64, and `refresh-base.py`, which
 asks the registry what upstream's `:latest` resolves to. Both write their pins and land in one
-commit — then the run builds only what moved: the channels whose Mesa changed, or *every*
-channel if the base changed. Most days nothing moves, and the run finishes green having built
-nothing. That is the normal outcome, not a misfire.
+commit.
+
+Then it builds **whatever the registry is missing** — not whatever moved during that run.
+`pending-channels.sh` works out each channel's expected tag and asks GHCR whether it is
+published, and whether `:<channel>` points at it. Most days everything is present, and the run
+finishes green having built nothing. That is the normal outcome, not a misfire.
+
+Asking the registry rather than tracking changes is what makes the run **idempotent**, and it
+was not the original design. On 2026-09-05 a run moved the kisak pin, committed it, and then
+died because Launchpad returned a 504 to `add-apt-repository`. The pin said 26.2.2, the
+registry had 26.1.7, and because the *next* run only compared the PPA against `channels.txt`
+— which already agreed — it would have built nothing, for ever. Reconciling against published
+images means a build that fails today is simply rebuilt tomorrow, with no manual step and no
+retry state to keep.
+
+The same outage is why `add-apt-repository` and both refresh scripts now retry: Launchpad went
+down twice in five days. Transport errors and 5xx are retried with backoff; a 4xx is a real
+answer and fails immediately.
 
 The refresh and the build share one run because a push made with `GITHUB_TOKEN` does not trigger
 `on: push`: a bot commit cannot start a build of its own, so the run that writes the pin has to
@@ -112,7 +127,8 @@ with `refresh` ticked — it behaves exactly as the scheduled run does, includin
 Channels do not `fail-fast` on each other, and that is load-bearing rather than tidy: a PPA can
 publish a build that trips one of the Containerfile's gates, and when that happens the other
 channel must still build and publish. Expect a run with one red leg and one green — that is the
-design working, not a broken repo.
+design working, not a broken repo. The failed channel is retried by the next daily run, because
+its image is still missing.
 
 Locally — `resolve-channel.sh` emits shell assignments, so `eval` gets you all four build
 args without repeating a version anywhere:

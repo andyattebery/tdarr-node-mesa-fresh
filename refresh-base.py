@@ -40,11 +40,19 @@ import argparse
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 TIMEOUT = 30
+
+# Registries and APIs go down. Launchpad took the nightly run out twice in the five days before
+# this was written (503 to refresh-channels.py, 504 to add-apt-repository), and there is no
+# reason to assume GHCR is better. Retry transport errors and 5xx; never retry a 4xx, which is
+# a real answer.
+RETRIES = 5
+BACKOFF = 5  # seconds, multiplied by the attempt number
 
 # The four an OCI registry may answer a manifest request with. Without all four, GHCR can
 # return a schema this script does not expect.
@@ -120,12 +128,30 @@ class Registry:
         self.repo = repo
         self.token = self._token()
 
+    def _open(self, req, allow_404=False):
+        """urlopen with retries. Returns None only for an allowed 404."""
+        what = f"{req.get_method()} {req.full_url}"
+        for attempt in range(1, RETRIES + 1):
+            try:
+                return urllib.request.urlopen(req, timeout=TIMEOUT)
+            except urllib.error.HTTPError as exc:
+                # A 404 from digest_of means "no such tag", which is a fact, not a failure.
+                if exc.code == 404 and allow_404:
+                    return None
+                # Any other 4xx is the server understanding and refusing. Retrying it would turn
+                # a fast, clear error into a slow, confusing one.
+                if exc.code < 500 or attempt == RETRIES:
+                    die(f"{what} failed: {exc}")
+                reason = f"HTTP {exc.code}"
+            except (urllib.error.URLError, OSError) as exc:
+                if attempt == RETRIES:
+                    die(f"{what} failed: {exc}")
+                reason = str(exc)
+            print(f"  {what}: {reason}; retry {attempt}/{RETRIES - 1}", file=sys.stderr)
+            time.sleep(BACKOFF * attempt)
+
     def _get(self, url, headers=None, method="GET"):
-        req = urllib.request.Request(url, headers=headers or {}, method=method)
-        try:
-            return urllib.request.urlopen(req, timeout=TIMEOUT)
-        except (urllib.error.URLError, OSError) as exc:
-            die(f"{method} {url} failed: {exc}")
+        return self._open(urllib.request.Request(url, headers=headers or {}, method=method))
 
     def _token(self):
         url = "https://ghcr.io/token?" + urllib.parse.urlencode({
@@ -148,15 +174,11 @@ class Registry:
         """The manifest digest a tag resolves to, or None if the tag does not exist."""
         url = f"https://ghcr.io/v2/{self.repo}/manifests/{ref}"
         req = urllib.request.Request(url, headers=self._auth(ACCEPT), method="HEAD")
-        try:
-            with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
-                return resp.headers.get("Docker-Content-Digest")
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
-                return None
-            die(f"HEAD {url} failed: {exc}")
-        except (urllib.error.URLError, OSError) as exc:
-            die(f"HEAD {url} failed: {exc}")
+        resp = self._open(req, allow_404=True)
+        if resp is None:
+            return None
+        with resp:
+            return resp.headers.get("Docker-Content-Digest")
 
     def json_at(self, ref, accept=ACCEPT):
         url = f"https://ghcr.io/v2/{self.repo}/manifests/{ref}"
