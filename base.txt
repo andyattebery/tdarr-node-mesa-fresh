@@ -34,4 +34,4 @@
 # channels.txt has its own, independent `hold`.
 
 # image                          version  digest
-ghcr.io/haveagitgat/tdarr_node   2.95.01  sha256:7a56924b2f567b306abfd155a70874ee0b45ff69c9f63ed93e6177ae57622df7
+ghcr.io/haveagitgat/tdarr_node   3.00.00  sha256:4d8e8d8b4159003858b255a3e44fb1564dbb599e996350c0c44a2ace25a46217
